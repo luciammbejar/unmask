@@ -34,7 +34,7 @@ const screens = {
     <div class="eyebrow">Talk · Guess · Reveal</div><h1>Unmask</h1>
     <p>Descubre quién se esconde detrás de cada número.</p>
     <div class="actions"><button onclick="go('create')">Crear partida</button><button class="secondary" onclick="go('join')">Unirse a partida</button></div>
-    <p class="small">V1.7 · preguntas + IA mejorada + investigación corregida</p>
+    <p class="small">V1.8 · IA natural + preguntas + investigación corregida</p>
   </section></main>`,
 
   create:()=>`<main class="screen center"><section class="card form">
@@ -120,7 +120,7 @@ const screens = {
         if(isMe){
           return `<div class="choice"><b style="color:${p.color}">Número ${p.player_number}</b><div class="small" style="padding:14px 0">🔒 Este es tu número. No tienes que asignarte a nadie.</div></div>`;
         }
-        return `<div class="choice"><b style="color:${p.color}">Número ${p.player_number}</b><select id="g-${p.player_number}">
+        return `<div class="choice"><b style="color:${p.color}">Número ${p.player_number}</b><select id="g-${p.player_number}" onchange="rememberGuess(${p.player_number}, this.value)">
           <option value="">¿Quién crees que es?</option>${others.map(x=>`<option value="${x.id}" ${state.guesses[p.player_number]===x.id?'selected':''}>${esc(x.name)}</option>`).join('')}
         </select></div>`;
       }).join('')}
@@ -596,7 +596,8 @@ async function triggerAI(delayMin=1800,delayMax=6800){
 
 function scheduleAIIfHost(){
   if(!state.me?.is_host || !state.ai_enabled)return;
-  triggerAI();
+  // Primera intervención después de que el grupo haya tenido tiempo de responder.
+  triggerAI(9000,16000);
 }
 
 async function sendMsg(){
@@ -620,8 +621,9 @@ async function sendMsg(){
     return;
   }
 
-  if(state.me?.is_host && state.ai_enabled && Math.random()<0.22){
-    triggerAI(1200,5200);
+  if(state.me?.is_host && state.ai_enabled){
+    // La IA no responde a todos los mensajes. Espera varios segundos para que parezca un jugador real.
+    if(Math.random()<0.32) triggerAI(6500,14500);
   }
 }
 
@@ -686,6 +688,20 @@ async function advanceToGuess(){
   const {data:g,error}=await db.from('games').update({status:'guessing',phase:'guessing'})
     .eq('id',state.game.id).select().single();
   if(error)alert(error.message);else if(g)handleGame(g);
+}
+
+function rememberGuess(number, value){
+  if(!value){
+    delete state.guesses[number];
+    return;
+  }
+  if(value===state.me?.id){
+    const el=document.querySelector(`#g-${number}`);
+    if(el)el.value='';
+    delete state.guesses[number];
+    return;
+  }
+  state.guesses[number]=value;
 }
 
 async function submitGuesses(){
@@ -753,6 +769,7 @@ async function submitGuesses(){
     target_player_id:p.id,
     guessed_number:p.player_number,
     guessed_player_id:selections[p.player_number],
+    guessed_name:state.players.find(x=>x.id===selections[p.player_number])?.name || '',
     is_correct:selections[p.player_number]===p.id
   }));
 
