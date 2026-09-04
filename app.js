@@ -34,7 +34,7 @@ const screens = {
     <div class="eyebrow">Talk · Guess · Reveal</div><h1>Unmask</h1>
     <p>Descubre quién se esconde detrás de cada número.</p>
     <div class="actions"><button onclick="go('create')">Crear partida</button><button class="secondary" onclick="go('join')">Unirse a partida</button></div>
-    <p class="small">V1.5 · chat único + IA secreta</p>
+    <p class="small">V1.6 · chat único + IA secreta + investigación corregida</p>
   </section></main>`,
 
   create:()=>`<main class="screen center"><section class="card form">
@@ -108,14 +108,18 @@ const screens = {
 
   guess:()=>{const nums=[...state.players].filter(p=>p.player_number).sort((a,b)=>a.player_number-b.player_number);
     const others=state.players.filter(p=>p.id!==state.me?.id);
+    const myNumber=state.me?.player_number;
     return `<main class="screen center"><section class="card form"><div class="eyebrow">Investigación final</div><h2>¿Quién es quién?</h2>
-      <p class="small">Asigna una persona real a cada número. No puedes elegirte a ti mismo.</p>
+      <p class="small">Asigna una persona a cada número. Tu propio número no puede seleccionarse.</p>
       ${nums.map(p=>`<div class="choice"><b style="color:${p.color}">Número ${p.player_number}</b><select id="g-${p.player_number}">
-        <option value="">¿Quién crees que es?</option>${others.map(x=>`<option value="${x.id}" ${state.guesses[p.player_number]===x.id?'selected':''}>${esc(x.name)}</option>`).join('')}
+        <option value="">¿Quién crees que es?</option>${others.map(x=>`<option value="${x.id}" ${state.guesses[p.player_number]===x.id?'selected':''}>${esc(x.name)}${x.player_number===myNumber?' (tú)':''}</option>`).join('')}
       </select></div>`).join('')}
-      <button onclick="submitGuesses()">Confirmar mis sospechas</button></section></main>`},
+      <div id="guessResult"></div>
+      <button id="confirmGuessesBtn" onclick="submitGuesses()">Confirmar mis sospechas</button>
+    </section></main>`},
 
   reveal:()=>{const nums=[...state.players].sort((a,b)=>a.player_number-b.player_number);
+const nums=[...state.players].sort((a,b)=>a.player_number-b.player_number);
     return `<main class="screen center"><section class="card form"><div class="eyebrow">Revelación</div><h2>🎭 ¿Quién estaba detrás?</h2>
       <div class="reveal">${nums.map(p=>`<div><b style="color:${p.color}">${p.player_number}</b> → ${esc(p.name)} ${p.is_ai?'🤖':''}</div>`).join('')}</div>
       <h3>🏆 Resultados</h3><div id="scoreboard">Calculando…</div><button onclick="leaveGame()">Volver al inicio</button>
@@ -536,8 +540,6 @@ async function generateQuestion(){
     state.loadError='';
     if(j.question)state.question=j.question;
 
-    await loadQuestion(false);
-
     // La pregunta se muestra en su panel propio. No la metemos en messages
     // porque player_id puede ser obligatorio y el chat debe contener solo jugadores.
     await loadQuestion(false);
@@ -631,62 +633,100 @@ async function advanceToGuess(){
 
 async function submitGuesses(){
 
+  if(!state.game || !state.me)return;
+
   const nums=[...state.players]
     .filter(p=>p.player_number)
     .sort((a,b)=>a.player_number-b.player_number);
 
-  let saved=0;
+  const targets=nums.filter(p=>p.id!==state.me.id);
+  const selections={};
+  const selectedPeople=new Set();
 
-  for(const p of nums){
+  for(const p of targets){
+    const v=document.querySelector(`#g-${p.player_number}`)?.value||'';
 
-    if(p.id===state.me?.id)continue;
-
-    const v=document.querySelector(`#g-${p.player_number}`)?.value;
-
-    if(v){
-      state.guesses[p.player_number]=v;
-
-      const {error}=await db.from('guesses').upsert({
-        game_id:state.game.id,
-        round:state.game.current_round,
-        guesser_id:state.me.id,
-        guessed_number:p.player_number,
-        guessed_player_id:v
-      },{
-        onConflict:'game_id,round,guesser_id,guessed_number'
-      });
-
-      if(error)console.error('Error guardando sospecha:',error);
-      else saved++;
+    if(!v){
+      const box=document.querySelector('#guessResult');
+      if(box)box.innerHTML='<div class="error-box">Te falta elegir una persona para cada número.</div>';
+      return;
     }
+
+    if(v===state.me.id){
+      const box=document.querySelector('#guessResult');
+      if(box)box.innerHTML='<div class="error-box">No puedes elegirte a ti mismo.</div>';
+      return;
+    }
+
+    if(selectedPeople.has(v)){
+      const box=document.querySelector('#guessResult');
+      if(box)box.innerHTML='<div class="error-box">Cada persona solo puede estar asignada a un número. Revisa tus sospechas.</div>';
+      return;
+    }
+
+    selectedPeople.add(v);
+    selections[p.player_number]=v;
   }
 
-  let points=0;
+  const btn=document.querySelector('#confirmGuessesBtn');
+  if(btn)btn.disabled=true;
 
-  for(const p of nums){
-    if(p.id===state.me?.id)continue;
+  state.guesses=selections;
 
-    const guessed=state.guesses[p.player_number];
+  // Guardamos las sospechas de esta ronda de forma segura:
+  // primero eliminamos las anteriores del mismo jugador y después insertamos.
+  const {error:deleteError}=await db.from('guesses')
+    .delete()
+    .eq('game_id',state.game.id)
+    .eq('round',state.game.current_round)
+    .eq('guesser_id',state.me.id);
 
-    if(guessed && guessed===p.id){
-      points++;
-    }
+  if(deleteError){
+    console.error('Error borrando sospechas anteriores:',deleteError);
+    if(btn)btn.disabled=false;
+    const box=document.querySelector('#guessResult');
+    if(box)box.innerHTML=`<div class="error-box">No se pudieron guardar tus sospechas: ${esc(deleteError.message)}</div>`;
+    return;
   }
 
+  const rows=targets.map(p=>({
+    game_id:state.game.id,
+    round:state.game.current_round,
+    guesser_id:state.me.id,
+    guessed_number:p.player_number,
+    guessed_player_id:selections[p.player_number],
+    is_correct:selections[p.player_number]===p.id
+  }));
+
+  const {error:insertError}=await db.from('guesses').insert(rows);
+
+  if(insertError){
+    console.error('Error guardando sospechas:',insertError);
+    if(btn)btn.disabled=false;
+    const box=document.querySelector('#guessResult');
+    if(box)box.innerHTML=`<div class="error-box">No se pudieron guardar tus sospechas: ${esc(insertError.message)}</div>`;
+    return;
+  }
+
+  const points=targets.reduce((total,p)=>{
+    return total+(selections[p.player_number]===p.id?1:0);
+  },0);
+
+  const total=targets.length;
   const resultBox=document.querySelector('#guessResult');
 
   if(resultBox){
     resultBox.innerHTML=`
       <div class="result-box">
-        <h3>🎯 Resultado</h3>
-        <p>Has acertado <b>${points}</b> ${points===1?'punto':'puntos'}.</p>
-        <p class="small">${saved} sospechas guardadas.</p>
+        <h3>🎯 Sospechas confirmadas</h3>
+        <p>Has acertado <b>${points} de ${total}</b>.</p>
+        <p class="small">${points===1?'Has conseguido 1 punto.':`Has conseguido ${points} puntos.`}</p>
+        <p class="small">Esperando a los demás jugadores…</p>
       </div>`;
   }
 
+  // Comprobamos si todos los jugadores humanos han terminado.
   const humans=state.players.filter(p=>!p.is_ai);
-  const neededPerHuman=Math.max(0,state.players.length-1);
-
   const {data:allGuesses,error:guessError}=await db.from('guesses')
     .select('guesser_id,guessed_number')
     .eq('game_id',state.game.id)
@@ -697,20 +737,26 @@ async function submitGuesses(){
     return;
   }
 
+  const neededPerHuman=Math.max(0,state.players.length-1);
+
   const completeHumans=humans.every(h=>{
     const mine=(allGuesses||[]).filter(g=>g.guesser_id===h.id);
     return new Set(mine.map(g=>g.guessed_number)).size>=neededPerHuman;
   });
 
-  if(completeHumans && state.me?.is_host){
-    const {error}=await db.from('games')
-      .update({
-        status:'finished',
-        phase:'reveal'
-      })
-      .eq('id',state.game.id);
+  if(completeHumans && state.me.is_host){
+    const {data:g,error}=await db.from('games')
+      .update({status:'finished',phase:'reveal'})
+      .eq('id',state.game.id)
+      .select()
+      .single();
 
-    if(error)console.error('Error terminando partida:',error);
+    if(error){
+      console.error('Error terminando partida:',error);
+      return;
+    }
+
+    if(g)handleGame(g);
   }
 }
 
