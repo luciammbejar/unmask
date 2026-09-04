@@ -119,7 +119,6 @@ const screens = {
     </section></main>`},
 
   reveal:()=>{const nums=[...state.players].sort((a,b)=>a.player_number-b.player_number);
-const nums=[...state.players].sort((a,b)=>a.player_number-b.player_number);
     return `<main class="screen center"><section class="card form"><div class="eyebrow">Revelación</div><h2>🎭 ¿Quién estaba detrás?</h2>
       <div class="reveal">${nums.map(p=>`<div><b style="color:${p.color}">${p.player_number}</b> → ${esc(p.name)} ${p.is_ai?'🤖':''}</div>`).join('')}</div>
       <h3>🏆 Resultados</h3><div id="scoreboard">Calculando…</div><button onclick="leaveGame()">Volver al inicio</button>
