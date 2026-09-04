@@ -20,7 +20,7 @@ const localQuestions={
 let state={
   screen:'home', name:'', room:'', category:'😂 Graciosas',
   game:null, me:null, players:[], messages:[], question:null, seconds:180,
-  channel:null, timer:null, busy:false
+  channel:null, timer:null, pollTimer:null, busy:false
 };
 const app=document.querySelector('#app');
 
@@ -41,7 +41,7 @@ home:()=>`<main class="screen center"><section class="card hero">
   <h1>Unmask</h1>
   <p>Habla, investiga y descubre quién se esconde detrás de cada número.</p>
   <div class="actions"><button onclick="go('create')">Crear partida</button><button class="secondary" onclick="go('join')">Unirse a partida</button></div>
-  <p class="small">V0.2 · multijugador en tiempo real</p>
+  <p class="small">V0.4 · números secretos aleatorios</p>
 </section></main>`,
 
 create:()=>`<main class="screen center"><section class="card form">
@@ -63,8 +63,7 @@ lobby:()=>`<main class="screen"><div class="room-grid">
   <section class="panel">
     <div class="eyebrow">Sala</div><div class="roomcode">${escapeHtml(state.room)}</div>
     <p class="small">Comparte este código con tus amigos.</p>
-    <h3>Jugadores <span class="muted">(${state.players.length})</span></h3>
-    <div class="players">${state.players.map(p=>`<div class="player"><span class="dot" style="background:${p.color||colors[(p.player_number||1)-1]||colors[0]}"></span><b>${escapeHtml(p.name)}</b>${p.is_host?'<span class="tag">ANFITRIÓN</span>':''}</div>`).join('')}</div>
+    <div class="lobby-count"><div class="count-number">${state.players.length}</div><div><h3>Jugadores conectados</h3><p class="small">Los números se repartirán al azar cuando empiece la partida.</p></div></div>
     ${state.me?.is_host && state.players.length>=2 ? '<button onclick="startGame()">🚀 Empezar partida</button>' : '<div class="waiting">Esperando al anfitrión…</div>'}
   </section>
   <section class="panel"><h3>Cómo funciona</h3><p>1. Cada jugador recibe un número.</p><p>2. Todos hablan en el mismo chat.</p><p>3. La pregunta cambia por rondas.</p><p>4. Al final intentáis descubrir quién es quién.</p><p class="small">En esta versión estamos probando el multijugador real.</p></section>
@@ -77,7 +76,7 @@ game:()=>`<main class="screen"><div class="game-grid">
     <div class="timer" id="timer">${fmt(state.seconds)}</div>
     <div class="identity" style="border-color:${state.me?.color||'#fff'}">
       <div class="eyebrow">Tu número secreto</div><div class="my-number" style="color:${state.me?.color||'#fff'}">${state.me?.player_number||'?'}</div>
-      <div class="small">Los demás solo ven tu número cuando escribes.</div>
+      <div class="small">Tu número se ha repartido al azar al comenzar. Los demás solo lo ven cuando escribes.</div>
     </div>
     <button class="secondary" onclick="finishRound()">Pasar a adivinar →</button>
   </section>
@@ -109,7 +108,7 @@ async function createRoom(){
   const code=Math.random().toString(36).slice(2,7).toUpperCase();
   const {data:game,error}=await db.from('games').insert({code,status:'waiting',category:categories[category],current_round:0,total_rounds:3}).select().single();
   if(error){state.busy=false; alert('No se pudo crear la partida: '+error.message);return}
-  const {data:player,error:pe}=await db.from('players').insert({game_id:game.id,name,player_number:1,color:colors[0],is_host:true,is_ai:false}).select().single();
+  const {data:player,error:pe}=await db.from('players').insert({game_id:game.id,name,player_number:null,color:colors[Math.floor(Math.random()*colors.length)],is_host:true,is_ai:false}).select().single();
   if(pe){alert('No se pudo crear el jugador: '+pe.message);state.busy=false;return}
   state.name=name; state.room=code; state.game=game; state.me=player;
   await enterRealtime(); state.busy=false; go('lobby'); await loadPlayers();
@@ -123,43 +122,82 @@ async function joinRoom(){
   const {data:game,error}=await db.from('games').select('*').eq('code',code).maybeSingle();
   if(error||!game){alert('No encontramos esa sala.');state.busy=false;return}
   if(game.status!=='waiting'){alert('Esa partida ya ha empezado.');state.busy=false;return}
-  const {data:existing}=await db.from('players').select('player_number').eq('game_id',game.id);
-  const used=(existing||[]).map(x=>x.player_number).filter(Boolean);
-  let num=1; while(used.includes(num)) num++;
-  if(num>20){alert('Esta sala está llena.');state.busy=false;return}
-  const {data:player,error:pe}=await db.from('players').insert({game_id:game.id,name,player_number:num,color:colors[(num-1)%colors.length],is_host:false,is_ai:false}).select().single();
+  const {count}=await db.from('players').select('id',{count:'exact',head:true}).eq('game_id',game.id);
+  if((count||0)>=20){alert('Esta sala está llena.');state.busy=false;return}
+  const {data:player,error:pe}=await db.from('players').insert({game_id:game.id,name,player_number:null,color:colors[Math.floor(Math.random()*colors.length)],is_host:false,is_ai:false}).select().single();
   if(pe){alert('No se pudo unir: '+pe.message);state.busy=false;return}
   state.name=name; state.room=code; state.game=game; state.me=player;
   await enterRealtime(); state.busy=false; go('lobby'); await loadPlayers();
 }
 
-async function loadPlayers(){
+async function loadPlayers(renderNow=true){
   if(!state.game)return;
   const {data,error}=await db.from('players').select('*').eq('game_id',state.game.id).order('player_number');
-  if(!error){state.players=data||[]; state.me=state.players.find(p=>p.id===state.me?.id)||state.me; render()}
+  if(!error){state.players=data||[]; state.me=state.players.find(p=>p.id===state.me?.id)||state.me; if(renderNow) render()}
+}
+
+async function handleGameUpdate(game){
+  if(!game)return;
+  const wasPlaying=state.game?.status==='playing';
+  state.game=game;
+  if(game.status==='playing' && !wasPlaying){
+    await loadQuestion();
+    go('game');
+    startTimer();
+  }
+}
+
+async function pollGame(){
+  if(!state.game)return;
+  const {data:game}=await db.from('games').select('*').eq('id',state.game.id).maybeSingle();
+  if(game) await handleGameUpdate(game);
+  if(state.screen==='lobby') await loadPlayers(true);
+  else if(state.screen==='game') await loadPlayers(false);
+  if(state.screen==='game') await loadMessages(false);
+}
+
+function startPolling(){
+  clearInterval(state.pollTimer);
+  state.pollTimer=setInterval(()=>{ pollGame().catch(()=>{}); },2000);
 }
 
 async function enterRealtime(){
   if(state.channel) await db.removeChannel(state.channel);
   state.channel=db.channel('game-'+state.game.id)
-    .on('postgres_changes',{event:'*',schema:'public',table:'players',filter:`game_id=eq.${state.game.id}`},async()=>{await loadPlayers()})
-    .on('postgres_changes',{event:'*',schema:'public',table:'games',filter:`id=eq.${state.game.id}`},async(payload)=>{
-      state.game=payload.new;
-      if(payload.new.status==='playing'){await loadQuestion(); go('game'); startTimer()}
-    })
-    .on('postgres_changes',{event:'*',schema:'public',table:'messages',filter:`game_id=eq.${state.game.id}`},async()=>{await loadMessages()})
+    .on('postgres_changes',{event:'*',schema:'public',table:'players',filter:`game_id=eq.${state.game.id}`},async()=>{await loadPlayers(state.screen==='lobby')})
+    .on('postgres_changes',{event:'*',schema:'public',table:'games',filter:`id=eq.${state.game.id}`},async(payload)=>{await handleGameUpdate(payload.new)})
+    .on('postgres_changes',{event:'*',schema:'public',table:'messages',filter:`game_id=eq.${state.game.id}`},async()=>{await loadMessages(state.screen!=='game')})
     .on('postgres_changes',{event:'*',schema:'public',table:'questions',filter:`game_id=eq.${state.game.id}`},async()=>{await loadQuestion()})
     .subscribe();
+  startPolling();
   await loadMessages();
 }
 
 async function startGame(){
   if(!state.me?.is_host)return;
+  if(state.players.length<2){alert('Necesitáis al menos 2 jugadores.');return}
+  if(state.busy)return;
+  state.busy=true;
+
+  // Los números NO se asignan al entrar. El anfitrión los reparte al azar justo al empezar.
+  const {data:players,error:loadError}=await db.from('players').select('id').eq('game_id',state.game.id);
+  if(loadError||!players||players.length<2){alert('No se pudieron cargar los jugadores.');state.busy=false;return}
+  const shuffled=[...Array(players.length)].map((_,i)=>i+1);
+  for(let i=shuffled.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[shuffled[i],shuffled[j]]=[shuffled[j],shuffled[i]]}
+
+  // Primero asignamos todos los números y solo después cambiamos la partida a "playing".
+  for(let i=0;i<players.length;i++){
+    const {error}=await db.from('players').update({player_number:shuffled[i]}).eq('id',players[i].id);
+    if(error){alert('No se pudieron repartir los números: '+error.message);state.busy=false;return}
+  }
+
   const {data:game,error}=await db.from('games').update({status:'playing',current_round:1}).eq('id',state.game.id).select().single();
-  if(error){alert('No se pudo iniciar: '+error.message);return}
+  if(error){alert('No se pudo iniciar la partida: '+error.message);state.busy=false;return}
   state.game=game;
+  await loadPlayers(false);
   await createQuestion(1);
   await loadQuestion(); go('game'); startTimer();
+  state.busy=false;
 }
 
 async function createQuestion(round){
@@ -175,11 +213,19 @@ async function loadQuestion(){
   if(data){state.question=data; render()}
 }
 
-async function loadMessages(){
+async function loadMessages(renderNow=true){
   const {data}=await db.from('messages').select('id,game_id,player_id,content,created_at,players:player_id(id,name,player_number,color)').eq('game_id',state.game.id).order('created_at');
   if(!data)return;
   state.messages=data.map(m=>({id:m.id,content:m.content,created_at:m.created_at,player:m.players}));
-  render();
+  if(renderNow){
+    render();
+  }else{
+    const box=document.querySelector('#messages');
+    if(box){
+      box.innerHTML=state.messages.map(m=>`<div class="msg"><div class="who" style="color:${m.player?.color||'#fff'}">${m.player?.player_number||'?'}</div><div class="bubble">${escapeHtml(m.content)}</div></div>`).join('');
+      box.scrollTo(0,99999);
+    }
+  }
   setTimeout(()=>document.querySelector('#messages')?.scrollTo(0,99999),20);
 }
 
@@ -198,5 +244,5 @@ function startTimer(){
 
 function finishRound(){clearInterval(state.timer);go('guess')}
 function revealLocal(){go('reveal')}
-function leaveGame(){if(state.channel)db.removeChannel(state.channel);state={screen:'home',name:'',room:'',category:'😂 Graciosas',game:null,me:null,players:[],messages:[],question:null,seconds:180,channel:null,timer:null,busy:false};render()}
+function leaveGame(){clearInterval(state.pollTimer);if(state.channel)db.removeChannel(state.channel);state={screen:'home',name:'',room:'',category:'😂 Graciosas',game:null,me:null,players:[],messages:[],question:null,seconds:180,channel:null,timer:null,pollTimer:null,busy:false};render()}
 render();

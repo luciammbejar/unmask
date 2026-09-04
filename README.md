@@ -1,6 +1,6 @@
-# Unmask V0.2
+# Unmask V0.3
 
-Primera versión conectada a Supabase para probar partidas desde varios dispositivos.
+Versión conectada a Supabase para probar partidas desde varios dispositivos, con actualización de jugadores por tiempo real y respaldo por consulta automática.
 
 ## Antes de abrir la web
 1. En Supabase abre SQL Editor.
