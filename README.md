@@ -1,21 +1,14 @@
-# Unmask V0.3
+# Unmask V1
 
-Versión conectada a Supabase para probar partidas desde varios dispositivos, con actualización de jugadores por tiempo real y respaldo por consulta automática.
+Versión jugable con salas multijugador, números aleatorios, chat anónimo, rondas, respuestas, investigación, puntuación y jugador IA secreto.
 
-## Antes de abrir la web
-1. En Supabase abre SQL Editor.
-2. Ejecuta `supabase-policies.sql`.
-3. Mantén las tablas Realtime de `players`, `messages` y `questions` activas.
+## 1. Supabase
+Ejecuta `supabase-v1-migration.sql` en SQL Editor.
 
-## Probar
-Puedes abrir `index.html` directamente para comprobar la interfaz, pero para la prueba real conviene publicarlo en GitHub Pages o Vercel.
+## 2. IA
+Despliega `supabase/functions/unmask-ai/index.ts` como Edge Function `unmask-ai` y configura el secreto `OPENAI_API_KEY` en Supabase. La clave nunca se mete en el navegador. Supabase recomienda guardar secretos de funciones como variables de entorno.
 
-La clave incluida en `config.js` es una **Publishable Key**, diseñada para aparecer en aplicaciones web. Aun así, la seguridad real de Unmask se reforzará antes de producción.
+## 3. GitHub Pages
+Sube `index.html`, `app.js`, `config.js`, `styles.css` a la raíz del repositorio. La carpeta `supabase/` y el SQL son para configurar el backend.
 
-## Próximo paso
-- Publicar el frontend.
-- Probar dos móviles en la misma sala.
-- Mejorar el sistema de identidad/números para que sean realmente privados.
-- Añadir IA para generar preguntas por categoría.
-- Añadir jugador IA secreto.
-- Implementar votaciones y puntuación reales.
+La seguridad RLS de esta versión sigue siendo de prototipo y debe endurecerse antes de compartir públicamente.
