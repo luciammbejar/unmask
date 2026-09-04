@@ -34,7 +34,7 @@ const screens = {
     <div class="eyebrow">Talk · Guess · Reveal</div><h1>Unmask</h1>
     <p>Descubre quién se esconde detrás de cada número.</p>
     <div class="actions"><button onclick="go('create')">Crear partida</button><button class="secondary" onclick="go('join')">Unirse a partida</button></div>
-    <p class="small">V1.6 · chat único + IA secreta + investigación corregida</p>
+    <p class="small">V1.7 · preguntas + IA mejorada + investigación corregida</p>
   </section></main>`,
 
   create:()=>`<main class="screen center"><section class="card form">
@@ -85,7 +85,12 @@ const screens = {
 
       ${state.loadError?`<div class="error-box">${esc(state.loadError)}</div>`:''}
 
-      ${state.me?.is_host?`<button class="secondary" onclick="advanceToGuess()">Pasar a investigación →</button>`:''}
+      ${state.me?.is_host?`
+        <div class="actions">
+          <button class="secondary" onclick="nextQuestion()">Nueva pregunta ↻</button>
+          <button class="secondary" onclick="advanceToGuess()">Pasar a investigación →</button>
+        </div>
+      `:''}
     </section>
 
     <section class="panel chat">
@@ -108,12 +113,17 @@ const screens = {
 
   guess:()=>{const nums=[...state.players].filter(p=>p.player_number).sort((a,b)=>a.player_number-b.player_number);
     const others=state.players.filter(p=>p.id!==state.me?.id);
-    const myNumber=state.me?.player_number;
     return `<main class="screen center"><section class="card form"><div class="eyebrow">Investigación final</div><h2>¿Quién es quién?</h2>
-      <p class="small">Asigna una persona a cada número. Tu propio número no puede seleccionarse.</p>
-      ${nums.map(p=>`<div class="choice"><b style="color:${p.color}">Número ${p.player_number}</b><select id="g-${p.player_number}">
-        <option value="">¿Quién crees que es?</option>${others.map(x=>`<option value="${x.id}" ${state.guesses[p.player_number]===x.id?'selected':''}>${esc(x.name)}${x.player_number===myNumber?' (tú)':''}</option>`).join('')}
-      </select></div>`).join('')}
+      <p class="small">Asigna una persona a cada número. Tu propio número queda bloqueado porque ya sabes quién eres.</p>
+      ${nums.map(p=>{
+        const isMe=p.id===state.me?.id;
+        if(isMe){
+          return `<div class="choice"><b style="color:${p.color}">Número ${p.player_number}</b><div class="small" style="padding:14px 0">🔒 Este es tu número. No tienes que asignarte a nadie.</div></div>`;
+        }
+        return `<div class="choice"><b style="color:${p.color}">Número ${p.player_number}</b><select id="g-${p.player_number}">
+          <option value="">¿Quién crees que es?</option>${others.map(x=>`<option value="${x.id}" ${state.guesses[p.player_number]===x.id?'selected':''}>${esc(x.name)}</option>`).join('')}
+        </select></div>`;
+      }).join('')}
       <div id="guessResult"></div>
       <button id="confirmGuessesBtn" onclick="submitGuesses()">Confirmar mis sospechas</button>
     </section></main>`},
@@ -350,9 +360,11 @@ async function loadQuestion(r=true){
 
   if(!state.game)return;
 
+  const round=state.game.current_round||1;
   const {data,error}=await db.from('questions')
     .select('*')
     .eq('game_id',state.game.id)
+    .eq('round',round)
     .order('created_at',{ascending:false})
     .limit(1)
     .maybeSingle();
@@ -622,6 +634,52 @@ function startTimer(){
   },1000);
 }
 
+async function nextQuestion(){
+  if(!state.me?.is_host || state.busy || !state.game)return;
+
+  state.busy=true;
+  try{
+    const nextRound=(state.game.current_round||0)+1;
+
+    const {data:g,error}=await db.from('games')
+      .update({
+        current_round:nextRound,
+        total_rounds:Math.max(state.game.total_rounds||3,nextRound),
+        status:'playing',
+        phase:'answers'
+      })
+      .eq('id',state.game.id)
+      .select()
+      .single();
+
+    if(error)throw error;
+
+    state.game=g;
+    state.question=null;
+    state.loadError='';
+    state.seconds=180;
+    render();
+    startTimer();
+
+    const ok=await generateQuestion();
+    await loadQuestion(false);
+
+    if(!ok){
+      state.loadError='No se pudo generar la pregunta. Puedes pulsar «Nueva pregunta» para reintentarlo.';
+      render();
+    }else{
+      render();
+    }
+
+    scheduleAIIfHost();
+  }catch(e){
+    console.error(e);
+    alert(e?.message||'No se pudo pasar a la siguiente pregunta.');
+  }finally{
+    state.busy=false;
+  }
+}
+
 async function advanceToGuess(){
   if(!state.me?.is_host)return;
   clearInterval(state.timer);
@@ -692,6 +750,7 @@ async function submitGuesses(){
     game_id:state.game.id,
     round:state.game.current_round,
     guesser_id:state.me.id,
+    target_player_id:p.id,
     guessed_number:p.player_number,
     guessed_player_id:selections[p.player_number],
     is_correct:selections[p.player_number]===p.id
