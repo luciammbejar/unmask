@@ -34,7 +34,7 @@ const screens = {
     <div class="eyebrow">Talk · Guess · Reveal</div><h1>Unmask</h1>
     <p>Descubre quién se esconde detrás de cada número.</p>
     <div class="actions"><button onclick="go('create')">Crear partida</button><button class="secondary" onclick="go('join')">Unirse a partida</button></div>
-    <p class="small">V1.3 · chat único + IA secreta</p>
+    <p class="small">V1.5 · chat único + IA secreta</p>
   </section></main>`,
 
   create:()=>`<main class="screen center"><section class="card form">
@@ -538,29 +538,10 @@ async function generateQuestion(){
 
     await loadQuestion(false);
 
-    const questionText=state.question?.question;
-
-    if(questionText){
-      const content=`🎭 PREGUNTA: ${questionText}`;
-
-      const {data:existing}=await db.from('messages')
-        .select('id')
-        .eq('game_id',state.game.id)
-        .eq('content',content)
-        .maybeSingle();
-
-      if(!existing){
-        await db.from('messages').insert({
-          game_id:state.game.id,
-          player_id:null,
-          content
-        });
-      }
-
-      await loadMessages(false);
-    }
-
-    return true;
+    // La pregunta se muestra en su panel propio. No la metemos en messages
+    // porque player_id puede ser obligatorio y el chat debe contener solo jugadores.
+    await loadQuestion(false);
+    return !!state.question?.question;
 
   }catch(e){
     console.error('Error llamando a unmask-ai:',e);
